@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Idea Canvas</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#fff; font-family:'Segoe UI',sans-serif; overflow:hidden; user-select:none; }
+
+  #toolbar {
+    position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
+    display:flex; gap:8px; background:#fff;
+    border:1px solid #e0e0e0; border-radius:40px;
+    padding:8px 16px; box-shadow:0 2px 16px rgba(0,0,0,0.10);
+    z-index:100; align-items:center;
+  }
+  .tool-btn {
+    padding:7px 18px; border-radius:20px; border:1px solid transparent;
+    font-size:13px; cursor:pointer; background:transparent;
+    color:#333; transition:all .15s; font-weight:500;
+  }
+  .tool-btn:hover { background:#f5f5f5; }
+  .tool-btn.active { background:#111; color:#fff; border-color:#111; }
+  .tool-btn.danger:hover { background:#fee; color:#c00; }
+
+  #hint {
+    position:fixed; bottom:80px; left:50%; transform:translateX(-50%);
+    font-size:12px; color:#999; pointer-events:none; white-space:nowrap;
+    transition: opacity .2s;
+  }
+
+  .node {
+    position:fixed; background:#fff; border:1.5px solid #111;
+    border-radius:12px; padding:10px 16px;
+    font-size:13px; color:#111; cursor:grab;
+    text-align:center; z-index:10;
+    box-shadow:0 1px 6px rgba(0,0,0,0.07);
+    pointer-events:all;
+    display:inline-flex; align-items:center; justify-content:center;
+  }
+  .node:active { cursor:grabbing; }
+  .node.selected { box-shadow:0 0 0 3px rgba(0,0,0,0.12); }
+  .node.main {
+    padding:14px 24px;
+    font-size:16px;
+    border-width:2px;
+    border-radius:16px;
+    z-index:30;
+    box-shadow:0 10px 32px rgba(0,0,0,0.16), 0 0 0 6px rgba(0,0,0,0.05);
+    transform:translateZ(0);
+  }
+  .node.main::after {
+    content:'MAIN';
+    position:absolute;
+    top:-20px;
+    left:50%;
+    transform:translateX(-50%);
+    font-size:9px;
+    letter-spacing:.12em;
+    color:#777;
+    font-weight:700;
+  }
+  .node.src { background:#111; color:#fff; }
+  .node span {
+    display:inline-block; min-width:40px; min-height:18px;
+    outline:none; white-space:pre-wrap; word-break:break-word;
+    cursor:text; text-align:center;
+  }
+</style>
+</head>
+<body>
+
+<svg id="svgl" style="position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;"></svg>
+<div id="hint">Drag nodes to move them • Double-click to rename</div>
+<div id="toolbar">
+  <button class="tool-btn active" id="btn-select"  onclick="setMode('select')">✦ Select</button>
+  <button class="tool-btn"        id="btn-add"     onclick="addNodeCenter()">＋ Add Node</button>
+  <button class="tool-btn"        id="btn-connect" onclick="setMode('connect')">⌁ Connect</button>
+  <button class="tool-btn"        id="btn-main"    onclick="setMainNode()">◎ Set Main</button>
+  <button class="tool-btn"                         onclick="saveStateNow(true)">💾 Save</button>
+  <button class="tool-btn"                         onclick="exportIdeas()">⇩ Export</button>
+  <button class="tool-btn"                         onclick="document.getElementById('import-file').click()">⇧ Import</button>
+  <button class="tool-btn danger"                  onclick="deleteSelected()">✕ Delete</button>
+  <input id="import-file" type="file" accept="application/json" style="display:none" onchange="importIdeas(event)">
+</div>
+
+<script>
+const svgl   = document.getElementById('svgl');
+const hintEl = document.getElementById('hint');
+
+let mode='select', nodes=[], edges=[];
+let selId=null, srcId=null, mainId=null;
+const STORAGE_KEY='idea_canvas_saved_state_v1';
+let dragId=null, dragOx=0, dragOy=0, dragTargetX=0, dragTargetY=0;
+let tick=0, nid=0;
+let lastTime=performance.now();
+let globalTemperature=1;
+
+// ── physics preset based on node_physics_system_specification.md ──
+const physicsConfig = {
+  // Relaxed / organic preset: softer springs, gentler constraints,
+  // more float, and less center/wall stiffness.
+  restLength: 155,
+  springStiffness: 0.018,
+  springDamping: 0.035,
+
+  connectedMinDistancePadding: 18,
+  connectedMinDistanceStrength: 0.12,
+
+  connectedMaxDistanceMultiplier: 2.15,
+  connectedMaxDistanceStrength: 0.035,
+
+  repulsionStrength: 5200,
+  repulsionRange: 380,
+  minRepulsionDistance: 55,
+
+  collisionPadding: 14,
+  collisionStrength: 0.32,
+
+  centerStrength: 0.0012,
+  wallStrength: 0.025,
+  wallMargin: 90,
+
+  aliveStrength: 0.09,
+  aliveSpeed: 0.32,
+
+  velocityDamping: 0.965,
+  maxSpeed: 16,
+
+  maxSpringForce: 45,
+  maxRepulsionForce: 75,
+  maxCollisionForce: 120,
+  maxAliveForce: 0.25,
+
+  minTemperature: 0.32,
+  coolingRate: 0.999,
+
+  dragFollowStrength: 0.18,
+  dragFollowDamping: 0.82,
+  releaseVelocityScale: 0.65,
+  epsilon: 0.0001
+};
+
+const hints = {
+  select:  'Drag nodes to move them • Double-click to rename • Select a node, then Set Main',
+  connect: 'Click a node to start — then click another to connect'
+};
+
+function setMode(m) {
+  mode=m; srcId=null;
+  document.querySelectorAll('.tool-btn').forEach(b=>b.classList.remove('active'));
+  const btn=document.getElementById('btn-'+m);
+  if (btn) btn.classList.add('active');
+  hintEl.textContent = hints[m] || '';
+  nodes.forEach(n=>n.el.classList.remove('src','selected'));
+  selId=null;
+}
+
+function getNode(id) { return nodes.find(n=>n.id===id); }
+
+function updateMainClasses() {
+  nodes.forEach(n=>n.el.classList.toggle('main', n.id===mainId));
+}
+
+function setMainNode() {
+  if (selId===null) {
+    hintEl.textContent = 'Select a node first, then click Set Main';
+    return;
+  }
+  mainId = selId;
+  const main = getNode(mainId);
+  if (main) {
+    main.x = innerWidth/2;
+    main.y = innerHeight/2;
+    main.vx = 0;
+    main.vy = 0;
+    main.temperature = 1;
+  }
+  nodes.forEach(n=>n.temperature=Math.max(n.temperature,0.75));
+  globalTemperature = 1;
+  updateMainClasses();
+  saveStateNow();
+  hintEl.textContent = 'Main node is locked to the center. Select another node and click Set Main to change it.';
+}
+
+function serializeState() {
+  return {
+    version:1,
+    mainId,
+    nid,
+    nodes:nodes.map(n=>({
+      id:n.id,
+      text:n.span.textContent,
+      x:n.x,
+      y:n.y,
+      vx:n.vx,
+      vy:n.vy,
+      noiseSeed:n.noiseSeed,
+      temperature:n.temperature
+    })),
+    edges:edges.map(e=>({
+      a:e.a,
+      b:e.b,
+      restLen:e.restLen,
+      stiffness:e.stiffness,
+      damping:e.damping
+    }))
+  };
+}
+
+let saveTimer=null;
+function saveStateNow(showMessage=false) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeState()));
+    if (showMessage) hintEl.textContent = 'Saved in this browser';
+  } catch (err) {
+    console.warn('Could not save idea canvas', err);
+    hintEl.textContent = 'Could not save in this browser. Use Export instead.';
+  }
+}
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  saveTimer=setTimeout(()=>saveStateNow(),350);
+}
+
+function clearCanvas() {
+  edges.forEach(e=>e.path.remove());
+  nodes.forEach(n=>n.el.remove());
+  nodes=[];
+  edges=[];
+  selId=null;
+  srcId=null;
+  dragId=null;
+  mainId=null;
+  nid=0;
+}
+
+function createConnection(aId,bId,options={}) {
+  const a=getNode(aId), b=getNode(bId);
+  if (!a||!b||aId===bId) return null;
+  const dup=edges.find(e=>(e.a===aId&&e.b===bId)||(e.a===bId&&e.b===aId));
+  if (dup) return dup;
+  const path=document.createElementNS('http://www.w3.org/2000/svg','path');
+  path.setAttribute('fill','none');
+  path.setAttribute('stroke','#111');
+  path.setAttribute('stroke-width','1');
+  path.setAttribute('stroke-linecap','round');
+  svgl.appendChild(path);
+  const edge={
+    a:aId,
+    b:bId,
+    path,
+    restLen:options.restLen ?? (physicsConfig.restLength + a.radius + b.radius),
+    stiffness:options.stiffness ?? physicsConfig.springStiffness,
+    damping:options.damping ?? physicsConfig.springDamping
+  };
+  edges.push(edge);
+  return edge;
+}
+
+function loadSavedState() {
+  try {
+    const raw=localStorage.getItem(STORAGE_KEY);
+    if (!raw) return false;
+    const state=JSON.parse(raw);
+    if (!state || !Array.isArray(state.nodes)) return false;
+    clearCanvas();
+    state.nodes.forEach(item=>{
+      const n=makeNode(item.x,item.y,item.text || 'Idea',item.id);
+      n.vx=item.vx || 0;
+      n.vy=item.vy || 0;
+      n.noiseSeed=typeof item.noiseSeed==='number' ? item.noiseSeed : Math.random()*Math.PI*2;
+      n.temperature=item.temperature || 1;
+    });
+    requestAnimationFrame(()=>{
+      (state.edges || []).forEach(e=>createConnection(e.a,e.b,e));
+      mainId=state.mainId && getNode(state.mainId) ? state.mainId : null;
+      if (mainId) {
+        const main=getNode(mainId);
+        main.x=innerWidth/2;
+        main.y=innerHeight/2;
+        main.vx=0;
+        main.vy=0;
+      }
+      updateMainClasses();
+      render();
+    });
+    nid=Math.max(nid,state.nid || 0);
+    return true;
+  } catch (err) {
+    console.warn('Could not load saved idea canvas', err);
+    return false;
+  }
+}
+
+function exportIdeas() {
+  const blob=new Blob([JSON.stringify(serializeState(),null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download='idea-canvas.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  hintEl.textContent='Exported ideas as JSON';
+}
+
+function importIdeas(event) {
+  const file=event.target.files && event.target.files[0];
+  event.target.value='';
+  if (!file) return;
+  const reader=new FileReader();
+  reader.onload=()=>{
+    try {
+      const state=JSON.parse(reader.result);
+      if (!state || !Array.isArray(state.nodes)) throw new Error('Invalid idea canvas file');
+      clearCanvas();
+      state.nodes.forEach(item=>{
+        const n=makeNode(item.x,item.y,item.text || 'Idea',item.id);
+        n.vx=item.vx || 0;
+        n.vy=item.vy || 0;
+        n.noiseSeed=typeof item.noiseSeed==='number' ? item.noiseSeed : Math.random()*Math.PI*2;
+        n.temperature=item.temperature || 1;
+      });
+      requestAnimationFrame(()=>{
+        (state.edges || []).forEach(e=>createConnection(e.a,e.b,e));
+        mainId=state.mainId && getNode(state.mainId) ? state.mainId : null;
+        updateMainClasses();
+        if (mainId) {
+          const main=getNode(mainId);
+          main.x=innerWidth/2;
+          main.y=innerHeight/2;
+        }
+        render();
+        saveStateNow(true);
+      });
+      nid=Math.max(nid,state.nid || 0);
+      hintEl.textContent='Imported ideas';
+    } catch (err) {
+      console.warn(err);
+      hintEl.textContent='Could not import this file';
+    }
+  };
+  reader.readAsText(file);
+}
+
+
+function length(x,y) { return Math.sqrt(x*x+y*y); }
+function clamp(value,min,max) { return Math.max(min,Math.min(max,value)); }
+
+function clampVector(x,y,maxLen) {
+  const len = length(x,y);
+  if (len > maxLen && len > physicsConfig.epsilon) {
+    const s = maxLen / len;
+    return { x:x*s, y:y*s };
+  }
+  return { x, y };
+}
+
+function addForce(node, fx, fy, maxForce=Infinity) {
+  if (!node || node.isPinned) return;
+  const f = clampVector(fx, fy, maxForce);
+  node.fx += f.x;
+  node.fy += f.y;
+}
+
+function updateNodeRadius(n) {
+  // Approximate visual collision radius from the DOM box.
+  n.radius = Math.max(24, Math.max(n.el.offsetWidth, n.el.offsetHeight) * 0.5);
+}
+
+// ── ADD NODE: spawns near the center with a small random offset ──
+function addNodeCenter() {
+  const cx = innerWidth/2 + (Math.random()-0.5)*80;
+  const cy = innerHeight/2 + (Math.random()-0.5)*80;
+  const n = makeNode(cx, cy, '');
+  n.vx = (Math.random()-0.5)*2;
+  n.vy = (Math.random()-0.5)*2;
+  n.temperature = 1;
+  globalTemperature = 1;
+  scheduleSave();
+  requestAnimationFrame(()=>requestAnimationFrame(()=>openEdit(n)));
+}
+
+function openEdit(n) {
+  const span = n.span;
+  span.contentEditable = 'true';
+  span.textContent = '';
+  span.focus();
+}
+
+// ── create node ──
+function makeNode(x, y, text='Idea', forcedId=null) {
+  const id = forcedId ?? ++nid;
+  nid = Math.max(nid, id);
+  const el  = document.createElement('div');
+  el.className = 'node';
+
+  const span = document.createElement('span');
+  span.contentEditable = 'false';
+  span.textContent = text || 'Idea';
+  el.appendChild(span);
+
+  el.style.left = '-9999px';
+  el.style.top  = '-9999px';
+  document.body.appendChild(el);
+
+  const n = {
+    id,
+    x, y,
+    vx:0, vy:0,
+    fx:0, fy:0,
+    mass:1,
+    radius:24,
+    isPinned:false,
+    pinPosition:null,
+    temperature:1,
+    noiseSeed:Math.random()*Math.PI*2,
+    phase:Math.random()*Math.PI*2,
+    el, span
+  };
+
+  requestAnimationFrame(()=>{
+    updateNodeRadius(n);
+    el.style.left = (x - el.offsetWidth/2)  + 'px';
+    el.style.top  = (y - el.offsetHeight/2) + 'px';
+  });
+
+  // edit on double-click
+  span.addEventListener('dblclick', e=>{
+    e.stopPropagation();
+    span.contentEditable = 'true';
+    span.focus();
+    const r = document.createRange();
+    r.selectNodeContents(span); r.collapse(false);
+    const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+  });
+  span.addEventListener('blur', ()=>{
+    span.contentEditable = 'false';
+    if (!span.textContent.trim()) span.textContent = 'Idea';
+    requestAnimationFrame(()=>updateNodeRadius(n));
+    scheduleSave();
+  });
+  span.addEventListener('keydown', e=>{
+    if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); span.blur(); }
+  });
+  span.addEventListener('mousedown', e=>{
+    if (span.contentEditable==='true') e.stopPropagation();
+  });
+
+  el.addEventListener('mousedown', e=>{
+    if (span.contentEditable==='true') return;
+    e.stopPropagation();
+    if (mode==='connect') { handleConnect(id); return; }
+    nodes.forEach(n=>n.el.classList.remove('selected','src'));
+    selId=id; el.classList.add('selected');
+    const rect = el.getBoundingClientRect();
+    dragOx = e.clientX - rect.left;
+    dragOy = e.clientY - rect.top;
+    if (id===mainId) return;
+    dragId = id;
+    dragTargetX = n.x;
+    dragTargetY = n.y;
+    n.vx=0; n.vy=0;
+  });
+
+  nodes.push(n);
+  return n;
+}
+
+function nodeCenter(n) {
+  return { x:n.x, y:n.y };
+}
+
+// ── connect ──
+function handleConnect(id) {
+  if (!srcId) {
+    srcId = id;
+    nodes.forEach(n=>n.el.classList.remove('src'));
+    getNode(id).el.classList.add('src');
+    hintEl.textContent = 'Now click the target node to connect';
+  } else if (srcId===id) {
+    srcId = null;
+    nodes.forEach(n=>n.el.classList.remove('src'));
+    hintEl.textContent = hints.connect;
+  } else {
+    const dup = edges.find(e=>(e.a===srcId&&e.b===id)||(e.a===id&&e.b===srcId));
+    if (!dup) {
+      const a = getNode(srcId), b = getNode(id);
+      createConnection(srcId,id);
+      a.temperature = Math.max(a.temperature, 0.8);
+      b.temperature = Math.max(b.temperature, 0.8);
+      globalTemperature = 1;
+      scheduleSave();
+    }
+    srcId = null;
+    nodes.forEach(n=>n.el.classList.remove('src'));
+    hintEl.textContent = hints.connect;
+  }
+}
+
+// ── canvas click ──
+document.addEventListener('mousedown', e=>{
+  if (e.target.tagName==='BUTTON') return;
+  const onCanvas = e.target===document.body || e.target===svgl;
+  if (!onCanvas) return;
+  if (mode==='connect' && srcId) {
+    srcId=null;
+    nodes.forEach(n=>n.el.classList.remove('src'));
+    hintEl.textContent = hints.connect;
+  } else {
+    nodes.forEach(n=>n.el.classList.remove('selected','src'));
+    selId=null;
+  }
+});
+
+// ── soft drag: pointer becomes a target, node follows with a relaxed spring ──
+window.addEventListener('mousemove', e=>{
+  if (dragId===null) return;
+  const n = getNode(dragId);
+  if (!n) return;
+  dragTargetX = e.clientX - dragOx + n.el.offsetWidth/2;
+  dragTargetY = e.clientY - dragOy + n.el.offsetHeight/2;
+});
+window.addEventListener('mouseup', ()=>{
+  if (dragId!==null) {
+    const n=getNode(dragId);
+    if (n) { n.vx*=physicsConfig.releaseVelocityScale; n.vy*=physicsConfig.releaseVelocityScale; }
+  }
+  scheduleSave();
+  dragId=null;
+});
+
+// ── delete ──
+function deleteSelected() {
+  if (selId===null) return;
+  const removed = getNode(selId);
+  if (!removed) return;
+  removed.el.remove();
+  const affected = edges.filter(e=>e.a===selId||e.b===selId).map(e=>e.a===selId?e.b:e.a);
+  nodes  = nodes.filter(n=>n.id!==selId);
+  edges  = edges.filter(e=>{
+    if (e.a===selId||e.b===selId) { e.path.remove(); return false; }
+    return true;
+  });
+  affected.forEach(id=>{
+    const n=getNode(id);
+    if (n) n.temperature = Math.max(n.temperature, 0.8);
+  });
+  if (mainId===selId) mainId=null;
+  updateMainClasses();
+  globalTemperature = 1;
+  selId = null;
+  scheduleSave();
+}
+window.addEventListener('keydown', e=>{
+  if ((e.key==='Delete'||e.key==='Backspace') && document.activeElement.contentEditable!=='true')
+    deleteSelected();
+});
+
+// ── wave path ──
+function wavePath(x1,y1,x2,y2,t) {
+  const dx=x2-x1, dy=y2-y1;
+  const len=Math.sqrt(dx*dx+dy*dy)||1;
+  const nx=-dy/len, ny=dx/len;
+  const steps=Math.max(18,Math.floor(len/9));
+  const amp=Math.min(5,len*0.03);
+  const freq=Math.max(1.5,Math.min(4.5,len/65));
+  let d=`M${x1.toFixed(1)},${y1.toFixed(1)}`;
+  for (let i=1;i<=steps;i++) {
+    const p=i/steps;
+    const wx=x1+dx*p, wy=y1+dy*p;
+    const w=amp*Math.sin(freq*Math.PI*2*p - t*1.25);
+    d+=` L${(wx+nx*w).toFixed(1)},${(wy+ny*w).toFixed(1)}`;
+  }
+  return d;
+}
+
+// ── stable force-directed physics ──
+function resetForces() {
+  nodes.forEach(n=>{
+    updateNodeRadius(n);
+    n.fx=0; n.fy=0;
+  });
+}
+
+function applySpringForces() {
+  edges.forEach(e=>{
+    const a=getNode(e.a), b=getNode(e.b);
+    if (!a||!b) return;
+
+    const dx=b.x-a.x, dy=b.y-a.y;
+    const d=Math.max(length(dx,dy), physicsConfig.epsilon);
+    const ux=dx/d, uy=dy/d;
+    const stretch=d-e.restLen;
+
+    // Hooke spring force.
+    let springFx=ux*stretch*e.stiffness;
+    let springFy=uy*stretch*e.stiffness;
+
+    // Damping along the spring direction reduces oscillation without killing elasticity.
+    const rvx=b.vx-a.vx, rvy=b.vy-a.vy;
+    const velocityAlongSpring=rvx*ux+rvy*uy;
+    springFx += ux*velocityAlongSpring*e.damping;
+    springFy += uy*velocityAlongSpring*e.damping;
+
+    addForce(a, springFx, springFy, physicsConfig.maxSpringForce);
+    addForce(b,-springFx,-springFy, physicsConfig.maxSpringForce);
+
+    // Soft minimum distance for connected nodes.
+    const minDistance=a.radius+b.radius+physicsConfig.connectedMinDistancePadding;
+    if (d < minDistance) {
+      const overlap=minDistance-d;
+      const sepFx=-ux*overlap*physicsConfig.connectedMinDistanceStrength;
+      const sepFy=-uy*overlap*physicsConfig.connectedMinDistanceStrength;
+      addForce(a, sepFx, sepFy, physicsConfig.maxCollisionForce);
+      addForce(b,-sepFx,-sepFy, physicsConfig.maxCollisionForce);
+    }
+
+    // Extra soft tension when a connection stretches too far.
+    const maxDistance=e.restLen*physicsConfig.connectedMaxDistanceMultiplier;
+    if (d > maxDistance) {
+      const excess=d-maxDistance;
+      const pullFx=ux*excess*physicsConfig.connectedMaxDistanceStrength;
+      const pullFy=uy*excess*physicsConfig.connectedMaxDistanceStrength;
+      addForce(a, pullFx, pullFy, physicsConfig.maxSpringForce);
+      addForce(b,-pullFx,-pullFy, physicsConfig.maxSpringForce);
+    }
+  });
+}
+
+function applyRepulsionAndCollision() {
+  for (let i=0;i<nodes.length;i++) {
+    for (let j=i+1;j<nodes.length;j++) {
+      const a=nodes[i], b=nodes[j];
+      const dx=b.x-a.x, dy=b.y-a.y;
+      const d=Math.max(length(dx,dy), physicsConfig.epsilon);
+      const ux=dx/d, uy=dy/d;
+
+      if (d < physicsConfig.repulsionRange) {
+        const safeDistance=Math.max(d, physicsConfig.minRepulsionDistance);
+        const repulsion=physicsConfig.repulsionStrength/(safeDistance*safeDistance);
+        addForce(a,-ux*repulsion,-uy*repulsion,physicsConfig.maxRepulsionForce);
+        addForce(b, ux*repulsion, uy*repulsion,physicsConfig.maxRepulsionForce);
+      }
+
+      const minimumAllowedDistance=a.radius+b.radius+physicsConfig.collisionPadding;
+      if (d < minimumAllowedDistance) {
+        const overlap=minimumAllowedDistance-d;
+        const collisionFx=ux*overlap*physicsConfig.collisionStrength;
+        const collisionFy=uy*overlap*physicsConfig.collisionStrength;
+        addForce(a,-collisionFx,-collisionFy,physicsConfig.maxCollisionForce);
+        addForce(b, collisionFx, collisionFy,physicsConfig.maxCollisionForce);
+      }
+    }
+  }
+}
+
+function applyCenterWallAndAliveForces(time) {
+  const W=innerWidth, H=innerHeight;
+  const cx=W/2, cy=H/2;
+  const margin=physicsConfig.wallMargin;
+
+  nodes.forEach(n=>{
+    // Very weak centering keeps the network from drifting away.
+    addForce(n,(cx-n.x)*physicsConfig.centerStrength,(cy-n.y)*physicsConfig.centerStrength);
+
+    // Soft containment walls, not hard clamps.
+    if (n.x < margin) addForce(n,(margin-n.x)*physicsConfig.wallStrength,0);
+    if (n.x > W-margin) addForce(n,-(n.x-(W-margin))*physicsConfig.wallStrength,0);
+    if (n.y < margin) addForce(n,0,(margin-n.y)*physicsConfig.wallStrength);
+    if (n.y > H-margin) addForce(n,0,-(n.y-(H-margin))*physicsConfig.wallStrength);
+
+    // Smooth sine-based alive force. No random per-frame jitter.
+    const localTemp=Math.max(n.temperature, physicsConfig.minTemperature);
+    const aliveFx=Math.sin(time*physicsConfig.aliveSpeed+n.noiseSeed)*physicsConfig.aliveStrength*localTemp;
+    const aliveFy=Math.cos(time*physicsConfig.aliveSpeed*0.8+n.noiseSeed)*physicsConfig.aliveStrength*localTemp;
+    addForce(n,aliveFx,aliveFy,physicsConfig.maxAliveForce);
+  });
+}
+
+function integrate(dt) {
+  const damping=Math.pow(physicsConfig.velocityDamping, dt);
+
+  nodes.forEach(n=>{
+    if (n.id===mainId) {
+      n.x=innerWidth/2;
+      n.y=innerHeight/2;
+      n.vx=0;
+      n.vy=0;
+      n.fx=0;
+      n.fy=0;
+      return;
+    }
+
+    if (n.isPinned) {
+      if (n.pinPosition) { n.x=n.pinPosition.x; n.y=n.pinPosition.y; }
+      n.fx=0; n.fy=0;
+      return;
+    }
+
+    if (n.id===dragId) {
+      // Relaxed drag: avoid a rigid locked-to-cursor feeling.
+      n.vx = (n.vx + (dragTargetX - n.x) * physicsConfig.dragFollowStrength) * physicsConfig.dragFollowDamping;
+      n.vy = (n.vy + (dragTargetY - n.y) * physicsConfig.dragFollowStrength) * physicsConfig.dragFollowDamping;
+      const v = clampVector(n.vx, n.vy, physicsConfig.maxSpeed * 1.4);
+      n.vx = v.x; n.vy = v.y;
+      n.x += n.vx * dt;
+      n.y += n.vy * dt;
+      n.fx=0; n.fy=0;
+      return;
+    }
+
+    const ax=n.fx/n.mass;
+    const ay=n.fy/n.mass;
+
+    // Clamp before and after integration to guard against edge cases.
+    let v=clampVector(n.vx+ax*dt, n.vy+ay*dt, physicsConfig.maxSpeed);
+    n.vx=v.x; n.vy=v.y;
+
+    n.x += n.vx*dt;
+    n.y += n.vy*dt;
+
+    n.vx *= damping;
+    n.vy *= damping;
+
+    v=clampVector(n.vx,n.vy,physicsConfig.maxSpeed);
+    n.vx=v.x; n.vy=v.y;
+
+    n.temperature=Math.max(physicsConfig.minTemperature,n.temperature*physicsConfig.coolingRate);
+  });
+
+  globalTemperature=Math.max(physicsConfig.minTemperature,globalTemperature*physicsConfig.coolingRate);
+}
+
+function physics(dt,time) {
+  resetForces();
+  applySpringForces();
+  applyRepulsionAndCollision();
+  applyCenterWallAndAliveForces(time);
+  integrate(dt);
+}
+
+function render() {
+  nodes.forEach(n=>{
+    n.el.style.left = (n.x - n.el.offsetWidth/2).toFixed(2) + 'px';
+    n.el.style.top  = (n.y - n.el.offsetHeight/2).toFixed(2) + 'px';
+  });
+
+  edges.forEach(e=>{
+    const a=getNode(e.a), b=getNode(e.b);
+    if (!a||!b) return;
+    const ac=nodeCenter(a), bc=nodeCenter(b);
+    e.path.setAttribute('d', wavePath(ac.x,ac.y,bc.x,bc.y,tick));
+  });
+}
+
+// ── render loop ──
+function loop(now=performance.now()) {
+  const dt=Math.min((now-lastTime)/16.666,2) || 1;
+  lastTime=now;
+  tick += dt*0.016;
+  physics(dt,now*0.001);
+  render();
+  requestAnimationFrame(loop);
+}
+
+// Load saved canvas, otherwise seed a small starting graph.
+setTimeout(()=>{
+  const loaded=loadSavedState();
+  if (!loaded) {
+    const cx=innerWidth/2, cy=innerHeight/2;
+    const a=makeNode(cx-190, cy+35,  'Idea');
+    const b=makeNode(cx+190, cy+35,  'Idea');
+    const c=makeNode(cx,     cy-120, 'Main Idea');
+    mainId=c.id;
+    updateMainClasses();
+    createConnection(c.id,a.id);
+    createConnection(c.id,b.id);
+    saveStateNow();
+  }
+}, 60);
+
+setInterval(()=>saveStateNow(),2500);
+window.addEventListener('beforeunload',()=>saveStateNow());
+window.addEventListener('resize',()=>{
+  if (mainId) {
+    const main=getNode(mainId);
+    if (main) { main.x=innerWidth/2; main.y=innerHeight/2; }
+  }
+});
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
