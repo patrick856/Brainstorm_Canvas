@@ -6,28 +6,48 @@
 <title>Idea Canvas</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { background:#fff; font-family:'Segoe UI',sans-serif; overflow:hidden; user-select:none; }
+  body { background:#fff; font-family:'Segoe UI',sans-serif; overflow:hidden; user-select:none; touch-action:none; min-height:100svh; }
+  :root { --toolbar-offset: 92px; --safe-bottom: max(16px, env(safe-area-inset-bottom)); }
 
   #toolbar {
-    position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
+    position:fixed; bottom:var(--safe-bottom); left:50%; transform:translateX(-50%);
     display:flex; gap:8px; background:#fff;
     border:1px solid #e0e0e0; border-radius:40px;
     padding:8px 16px; box-shadow:0 2px 16px rgba(0,0,0,0.10);
-    z-index:100; align-items:center;
+    z-index:100; align-items:center; justify-content:center;
+    max-width:calc(100vw - 24px);
   }
   .tool-btn {
     padding:7px 18px; border-radius:20px; border:1px solid transparent;
     font-size:13px; cursor:pointer; background:transparent;
     color:#333; transition:all .15s; font-weight:500;
+    white-space:nowrap; touch-action:manipulation;
   }
   .tool-btn:hover { background:#f5f5f5; }
   .tool-btn.active { background:#111; color:#fff; border-color:#111; }
   .tool-btn.danger:hover { background:#fee; color:#c00; }
+  .btn-icon { display:inline-block; margin-right:4px; }
+  .shortcut-key {
+    display:inline-flex; align-items:center; justify-content:center;
+    min-width:18px; height:18px; margin-right:5px;
+    border:1px solid currentColor; border-radius:6px;
+    font-size:10px; line-height:1; opacity:.72;
+  }
 
   #hint {
-    position:fixed; bottom:80px; left:50%; transform:translateX(-50%);
-    font-size:12px; color:#999; pointer-events:none; white-space:nowrap;
+    position:fixed;
+    bottom:calc(var(--toolbar-offset) + 4px);
+    left:50%; transform:translateX(-50%);
+    max-width:calc(100vw - 28px);
+    padding:6px 10px;
+    border-radius:999px;
+    background:rgba(255,255,255,0.86);
+    backdrop-filter:blur(8px);
+    box-shadow:0 1px 8px rgba(0,0,0,0.06);
+    font-size:12px; color:#777; pointer-events:none; white-space:normal;
+    text-align:center; line-height:1.35;
     transition: opacity .2s;
+    z-index:99;
   }
 
   .node {
@@ -36,8 +56,9 @@
     font-size:13px; color:#111; cursor:grab;
     text-align:center; z-index:10;
     box-shadow:0 1px 6px rgba(0,0,0,0.07);
-    pointer-events:all;
+    pointer-events:all; touch-action:none;
     display:inline-flex; align-items:center; justify-content:center;
+    max-width:min(260px, calc(100vw - 40px));
   }
   .node:active { cursor:grabbing; }
   .node.selected { box-shadow:0 0 0 3px rgba(0,0,0,0.12); }
@@ -67,6 +88,59 @@
     outline:none; white-space:pre-wrap; word-break:break-word;
     cursor:text; text-align:center;
   }
+
+  @media (max-width: 720px) {
+    .shortcut-key, .btn-icon { display:none; }
+    #toolbar {
+      left:12px;
+      right:12px;
+      transform:none;
+      max-width:none;
+      width:auto;
+      flex-wrap:wrap;
+      gap:6px;
+      border-radius:24px;
+      padding:8px;
+      max-height:34svh;
+      overflow-y:auto;
+      -webkit-overflow-scrolling:touch;
+    }
+    .tool-btn {
+      flex:1 1 calc(50% - 6px);
+      min-width:112px;
+      padding:10px 12px;
+      font-size:12px;
+    }
+    #hint {
+      font-size:11px;
+      bottom:calc(var(--toolbar-offset) + 4px);
+      border-radius:14px;
+    }
+    .node {
+      padding:9px 13px;
+      font-size:12px;
+      border-radius:11px;
+      max-width:calc(100vw - 32px);
+    }
+    .node.main {
+      padding:12px 18px;
+      font-size:14px;
+      border-radius:14px;
+    }
+    .node.main::after {
+      top:-18px;
+      font-size:8px;
+    }
+  }
+
+  @media (max-width: 420px) {
+    .tool-btn {
+      flex-basis:calc(50% - 4px);
+      min-width:0;
+      padding:9px 8px;
+      font-size:11px;
+    }
+  }
 </style>
 </head>
 <body>
@@ -74,20 +148,31 @@
 <svg id="svgl" style="position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;"></svg>
 <div id="hint">Drag nodes to move them • Double-click to rename</div>
 <div id="toolbar">
-  <button class="tool-btn active" id="btn-select"  onclick="setMode('select')">✦ Select</button>
-  <button class="tool-btn"        id="btn-add"     onclick="addNodeCenter()">＋ Add Node</button>
-  <button class="tool-btn"        id="btn-connect" onclick="setMode('connect')">⌁ Connect</button>
-  <button class="tool-btn"        id="btn-main"    onclick="setMainNode()">◎ Set Main</button>
-  <button class="tool-btn"                         onclick="saveStateNow(true)">💾 Save</button>
-  <button class="tool-btn"                         onclick="exportIdeas()">⇩ Export</button>
-  <button class="tool-btn"                         onclick="document.getElementById('import-file').click()">⇧ Import</button>
-  <button class="tool-btn danger"                  onclick="deleteSelected()">✕ Delete</button>
+  <button class="tool-btn active" id="btn-select"  title="Shortcut: S" onclick="setMode('select')"><span class="shortcut-key">S</span><span class="btn-icon">✦</span> Select</button>
+  <button class="tool-btn"        id="btn-add"     title="Shortcut: A" onclick="addNodeCenter()"><span class="shortcut-key">A</span><span class="btn-icon">＋</span> Add</button>
+  <button class="tool-btn"        id="btn-connect" title="Shortcut: C" onclick="setMode('connect')"><span class="shortcut-key">C</span><span class="btn-icon">⌁</span> Connect</button>
+  <button class="tool-btn"        id="btn-main"    title="Shortcut: M" onclick="setMainNode()"><span class="shortcut-key">M</span><span class="btn-icon">◎</span> Main</button>
+  <button class="tool-btn"        id="btn-export"  title="Shortcut: E" onclick="exportIdeas()"><span class="shortcut-key">E</span><span class="btn-icon">⇩</span> Export</button>
+  <button class="tool-btn"        id="btn-import"  title="Shortcut: I" onclick="document.getElementById('import-file').click()"><span class="shortcut-key">I</span><span class="btn-icon">⇧</span> Import</button>
+  <button class="tool-btn danger" id="btn-delete"  title="Shortcut: D / Delete / Backspace" onclick="deleteSelected()"><span class="shortcut-key">D</span><span class="btn-icon">✕</span> Delete</button>
   <input id="import-file" type="file" accept="application/json" style="display:none" onchange="importIdeas(event)">
 </div>
 
 <script>
 const svgl   = document.getElementById('svgl');
 const hintEl = document.getElementById('hint');
+const toolbarEl = document.getElementById('toolbar');
+
+function updateToolbarOffset() {
+  const safeExtra = 32;
+  const h = toolbarEl ? toolbarEl.offsetHeight : 56;
+  document.documentElement.style.setProperty('--toolbar-offset', (h + safeExtra) + 'px');
+}
+if ('ResizeObserver' in window && toolbarEl) {
+  new ResizeObserver(updateToolbarOffset).observe(toolbarEl);
+}
+window.addEventListener('load', updateToolbarOffset);
+window.addEventListener('resize', updateToolbarOffset);
 
 let mode='select', nodes=[], edges=[];
 let selId=null, srcId=null, mainId=null;
@@ -143,8 +228,8 @@ const physicsConfig = {
 };
 
 const hints = {
-  select:  'Drag nodes to move them • Double-click to rename • Select a node, then Set Main',
-  connect: 'Click a node to start — then click another to connect'
+  select:  'Shortcuts: S Select • A Add • C Connect • M Main • E Export • I Import • D Delete',
+  connect: 'Click one node, then another — if already connected, it will unconnect • Press S to exit'
 };
 
 function setMode(m) {
@@ -165,7 +250,7 @@ function updateMainClasses() {
 
 function setMainNode() {
   if (selId===null) {
-    hintEl.textContent = 'Select a node first, then click Set Main';
+    hintEl.textContent = 'Select a node first, then click Main or press M';
     return;
   }
   mainId = selId;
@@ -181,7 +266,7 @@ function setMainNode() {
   globalTemperature = 1;
   updateMainClasses();
   saveStateNow();
-  hintEl.textContent = 'Main node is locked to the center. Select another node and click Set Main to change it.';
+  hintEl.textContent = 'Main node is locked to the center. Select another node and press M to change it.';
 }
 
 function serializeState() {
@@ -236,16 +321,36 @@ function clearCanvas() {
   nid=0;
 }
 
+function findEdge(aId,bId) {
+  return edges.find(e=>(e.a===aId&&e.b===bId)||(e.a===bId&&e.b===aId));
+}
+
+function removeConnection(edge, options={}) {
+  if (!edge) return false;
+  edge.path.remove();
+  edges = edges.filter(e=>e!==edge);
+
+  const a=getNode(edge.a), b=getNode(edge.b);
+  if (a) a.temperature=Math.max(a.temperature,0.65);
+  if (b) b.temperature=Math.max(b.temperature,0.65);
+  globalTemperature=1;
+
+  if (!options.skipSave) scheduleSave();
+  return true;
+}
+
 function createConnection(aId,bId,options={}) {
   const a=getNode(aId), b=getNode(bId);
   if (!a||!b||aId===bId) return null;
-  const dup=edges.find(e=>(e.a===aId&&e.b===bId)||(e.a===bId&&e.b===aId));
+  const dup=findEdge(aId,bId);
   if (dup) return dup;
   const path=document.createElementNS('http://www.w3.org/2000/svg','path');
   path.setAttribute('fill','none');
   path.setAttribute('stroke','#111');
   path.setAttribute('stroke-width','1');
   path.setAttribute('stroke-linecap','round');
+  path.style.pointerEvents='stroke';
+  path.style.cursor='pointer';
   svgl.appendChild(path);
   const edge={
     a:aId,
@@ -255,6 +360,26 @@ function createConnection(aId,bId,options={}) {
     stiffness:options.stiffness ?? physicsConfig.springStiffness,
     damping:options.damping ?? physicsConfig.springDamping
   };
+
+  path.addEventListener('pointerenter',()=>{
+    if (mode==='connect') {
+      path.setAttribute('stroke','#c00');
+      path.setAttribute('stroke-width','2');
+    }
+  });
+  path.addEventListener('pointerleave',()=>{
+    path.setAttribute('stroke','#111');
+    path.setAttribute('stroke-width','1');
+  });
+  path.addEventListener('pointerdown',e=>{
+    if (mode!=='connect') return;
+    e.stopPropagation();
+    removeConnection(edge);
+    srcId=null;
+    nodes.forEach(n=>n.el.classList.remove('src'));
+    hintEl.textContent='Connection removed';
+  });
+
   edges.push(edge);
   return edge;
 }
@@ -446,13 +571,15 @@ function makeNode(x, y, text='Idea', forcedId=null) {
   span.addEventListener('keydown', e=>{
     if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); span.blur(); }
   });
-  span.addEventListener('mousedown', e=>{
+  span.addEventListener('pointerdown', e=>{
     if (span.contentEditable==='true') e.stopPropagation();
   });
 
-  el.addEventListener('mousedown', e=>{
+  el.addEventListener('pointerdown', e=>{
     if (span.contentEditable==='true') return;
     e.stopPropagation();
+    e.preventDefault();
+    if (typeof el.setPointerCapture === 'function') el.setPointerCapture(e.pointerId);
     if (mode==='connect') { handleConnect(id); return; }
     nodes.forEach(n=>n.el.classList.remove('selected','src'));
     selId=id; el.classList.add('selected');
@@ -480,30 +607,39 @@ function handleConnect(id) {
     srcId = id;
     nodes.forEach(n=>n.el.classList.remove('src'));
     getNode(id).el.classList.add('src');
-    hintEl.textContent = 'Now click the target node to connect';
-  } else if (srcId===id) {
-    srcId = null;
-    nodes.forEach(n=>n.el.classList.remove('src'));
-    hintEl.textContent = hints.connect;
-  } else {
-    const dup = edges.find(e=>(e.a===srcId&&e.b===id)||(e.a===id&&e.b===srcId));
-    if (!dup) {
-      const a = getNode(srcId), b = getNode(id);
-      createConnection(srcId,id);
-      a.temperature = Math.max(a.temperature, 0.8);
-      b.temperature = Math.max(b.temperature, 0.8);
-      globalTemperature = 1;
-      scheduleSave();
-    }
-    srcId = null;
-    nodes.forEach(n=>n.el.classList.remove('src'));
-    hintEl.textContent = hints.connect;
+    hintEl.textContent = 'Now click another node to connect or unconnect';
+    return;
   }
+
+  if (srcId===id) {
+    srcId = null;
+    nodes.forEach(n=>n.el.classList.remove('src'));
+    hintEl.textContent = hints.connect;
+    return;
+  }
+
+  const existingEdge = findEdge(srcId,id);
+  const a = getNode(srcId), b = getNode(id);
+
+  if (existingEdge) {
+    removeConnection(existingEdge,{skipSave:true});
+    hintEl.textContent = 'Connection removed';
+  } else {
+    createConnection(srcId,id);
+    if (a) a.temperature = Math.max(a.temperature, 0.8);
+    if (b) b.temperature = Math.max(b.temperature, 0.8);
+    globalTemperature = 1;
+    hintEl.textContent = 'Connection added';
+  }
+
+  scheduleSave();
+  srcId = null;
+  nodes.forEach(n=>n.el.classList.remove('src'));
 }
 
 // ── canvas click ──
-document.addEventListener('mousedown', e=>{
-  if (e.target.tagName==='BUTTON') return;
+document.addEventListener('pointerdown', e=>{
+  if (e.target.tagName==='BUTTON' || e.target.tagName==='INPUT' || (toolbarEl && toolbarEl.contains(e.target))) return;
   const onCanvas = e.target===document.body || e.target===svgl;
   if (!onCanvas) return;
   if (mode==='connect' && srcId) {
@@ -517,21 +653,23 @@ document.addEventListener('mousedown', e=>{
 });
 
 // ── soft drag: pointer becomes a target, node follows with a relaxed spring ──
-window.addEventListener('mousemove', e=>{
+window.addEventListener('pointermove', e=>{
   if (dragId===null) return;
   const n = getNode(dragId);
   if (!n) return;
   dragTargetX = e.clientX - dragOx + n.el.offsetWidth/2;
   dragTargetY = e.clientY - dragOy + n.el.offsetHeight/2;
 });
-window.addEventListener('mouseup', ()=>{
+function endDrag() {
   if (dragId!==null) {
     const n=getNode(dragId);
     if (n) { n.vx*=physicsConfig.releaseVelocityScale; n.vy*=physicsConfig.releaseVelocityScale; }
   }
   scheduleSave();
   dragId=null;
-});
+}
+window.addEventListener('pointerup', endDrag);
+window.addEventListener('pointercancel', endDrag);
 
 // ── delete ──
 function deleteSelected() {
@@ -555,9 +693,48 @@ function deleteSelected() {
   selId = null;
   scheduleSave();
 }
+function isTypingTarget(target) {
+  if (!target) return false;
+  const tag = target.tagName;
+  return target.isContentEditable ||
+    tag === 'INPUT' ||
+    tag === 'TEXTAREA' ||
+    tag === 'SELECT';
+}
+
+function triggerImportPicker() {
+  const input = document.getElementById('import-file');
+  if (input) input.click();
+}
+
 window.addEventListener('keydown', e=>{
-  if ((e.key==='Delete'||e.key==='Backspace') && document.activeElement.contentEditable!=='true')
+  // Do not hijack typing, browser shortcuts, or OS shortcuts.
+  if (isTypingTarget(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
+
+  const key = e.key.toLowerCase();
+
+  if (key === 's') {
+    e.preventDefault();
+    setMode('select');
+  } else if (key === 'a') {
+    e.preventDefault();
+    addNodeCenter();
+  } else if (key === 'c') {
+    e.preventDefault();
+    setMode('connect');
+  } else if (key === 'm') {
+    e.preventDefault();
+    setMainNode();
+  } else if (key === 'e') {
+    e.preventDefault();
+    exportIdeas();
+  } else if (key === 'i') {
+    e.preventDefault();
+    triggerImportPicker();
+  } else if (key === 'd' || e.key === 'Delete' || e.key === 'Backspace') {
+    e.preventDefault();
     deleteSelected();
+  }
 });
 
 // ── wave path ──
@@ -769,6 +946,7 @@ function loop(now=performance.now()) {
 
 // Load saved canvas, otherwise seed a small starting graph.
 setTimeout(()=>{
+  updateToolbarOffset();
   const loaded=loadSavedState();
   if (!loaded) {
     const cx=innerWidth/2, cy=innerHeight/2;
@@ -786,6 +964,7 @@ setTimeout(()=>{
 setInterval(()=>saveStateNow(),2500);
 window.addEventListener('beforeunload',()=>saveStateNow());
 window.addEventListener('resize',()=>{
+  updateToolbarOffset();
   if (mainId) {
     const main=getNode(mainId);
     if (main) { main.x=innerWidth/2; main.y=innerHeight/2; }
